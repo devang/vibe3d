@@ -7,7 +7,7 @@ import ChatThread from "@/components/ChatThread";
 import ParamPanel from "@/components/ParamPanel";
 import { compileScad } from "@/lib/scad/compile";
 import { applyParams, parseParams } from "@/lib/scad/params";
-import { downloadBlob } from "@/lib/image";
+import { downloadBlob, downscaleDataUrl } from "@/lib/image";
 import { EXAMPLE_KNOB } from "@/lib/examples";
 import { postJson, type ChatMessage, type Part, type PartMeta, type PhysicsSpec, type PhysicsReport } from "@/lib/client";
 import type { ModelInfo, ViewerHandle } from "@/components/Viewer";
@@ -220,11 +220,16 @@ export default function Home() {
       }
       const stlBase64 = btoa(binary);
 
+      // Downscale up to 2 photos to compact thumbnails (512px, ~30-50KB each) to prevent HTTP 413
+      const physicsPhotos = photos.length
+        ? await Promise.all(photos.slice(0, 2).map((p) => downscaleDataUrl(p, 512, 0.65)))
+        : [];
+
       const report = await postJson<PhysicsReport>("/api/verify-physics", {
         stlBase64,
         code: bakedCode(),
         prompt: originalPrompt,
-        photos,
+        photos: physicsPhotos,
         physics: activePhysics,
       });
 
