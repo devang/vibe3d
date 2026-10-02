@@ -9,7 +9,8 @@ import { compileScad } from "@/lib/scad/compile";
 import { applyParams, parseParams } from "@/lib/scad/params";
 import { downloadBlob, downscaleDataUrl } from "@/lib/image";
 import { EXAMPLE_KNOB } from "@/lib/examples";
-import { postJson, type ChatMessage, type Part, type PartMeta, type PhysicsSpec, type PhysicsReport } from "@/lib/client";
+import { postJson, type ChatMessage, type MatingType, type Part, type PartMeta, type PhysicsSpec, type PhysicsReport } from "@/lib/client";
+import { runPhysicsCheck } from "@/lib/physics";
 import type { ModelInfo, ViewerHandle } from "@/components/Viewer";
 
 const Viewer = dynamic(() => import("@/components/Viewer"), {
@@ -25,6 +26,22 @@ const SUGGESTIONS = [
   "Shelf support pin, 5 mm peg",
   "Dishwasher rack wheel",
 ];
+
+type MatingPart = {
+  part1_name: string;
+  part2_name: string;
+  description: string;
+  motion: PhysicsSpec["motion"];
+  fit_preference: PhysicsSpec["fit_preference"];
+  mating_type?: MatingType;
+  part2_scad: string;
+  primary_dim_mm: number;
+  depth_mm?: number;
+  flat_mm?: number;
+};
+
+const labelFor = (t: MatingType) =>
+  ({ d_shaft: "D-shaft", round_shaft: "round shaft", pin: "pin", slot: "key/tab", flat_ground: "flat surface" })[t] || t;
 
 let msgId = 1;
 
@@ -204,67 +221,82 @@ export default function Home() {
 
   async function verifyPhysics() {
     if (!stl) return;
-    setBusy("Identifying mating part from photos & running MuJoCo simulation…");
-    const activePhysics: PhysicsSpec = physics || {
+    const base: PhysicsSpec = physics || {
       motion: "rotating",
       fit_preference: "snug",
       mating_part: { type: "d_shaft", primary_dim_mm: 6.0, depth_mm: 14.0 },
     };
 
     try {
-      let binary = "";
-      const bytes = new Uint8Array(stl);
-      const len = bytes.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const stlBase64 = btoa(binary);
-
-      // Downscale up to 2 photos to compact thumbnails (512px, ~30-50KB each) to prevent HTTP 413
-      const physicsPhotos = photos.length
-        ? await Promise.all(photos.slice(0, 2).map((p) => downscaleDataUrl(p, 512, 0.65)))
-        : [];
-
-      const report = await postJson<PhysicsReport>("/api/verify-physics", {
-        stlBase64,
-        code: bakedCode(),
-        prompt: originalPrompt,
-        photos: physicsPhotos,
-        physics: activePhysics,
-      });
-
-      setPhysicsReport(report);
-      if (report.motion && report.fit_preference) {
-        setPhysics({
-          motion: (report.motion as "sliding" | "rotating" | "static") || activePhysics.motion,
-          fit_preference: (report.fit_preference as "snug" | "smooth" | "loose") || activePhysics.fit_preference,
-          mating_part: {
-            type: (report.mating_part?.type as "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground") || activePhysics.mating_part.type,
-            primary_dim_mm: report.mating_part?.primary_dim_mm || activePhysics.mating_part.primary_dim_mm,
-            depth_mm: report.mating_part?.depth_mm || activePhysics.mating_part.depth_mm,
-          },
-        });
+      // 1. Ask Gemini what the part mates with (Part 2) and get it modelled in OpenSCAD.
+      setBusy("Identifying the mating part…");
+      let mating: MatingPart | null = null;
+      try {
+        const physicsPhotos = photos.length ? await Promise.all(photos.slice(0, 2).map((p) => downscaleDataUrl(p, 512, 0.65))) : [];
+        mating = await postJson<MatingPart>("/api/mating-part", { code: bakedCode(), prompt: originalPrompt, photos: physicsPhotos });
+      } catch {
+        mating = null; // no key / quota / offline: fall back to a standard shaft from the spec
       }
 
-      const p1 = report.part1_name || part?.title || "Replacement Part (Part 1)";
-      const p2 = report.part2_name || "Mating Fixture (Part 2)";
-      if (report.passed) {
-        say({
-          role: "assistant",
-          text: `⚙️ **Two-Body Physics Verified with MuJoCo**\n• **Part 1 (Replacement)**: ${p1}\n• **Part 2 (From Photo)**: ${p2}\n• **Interaction**: ${report.motion} (${report.fit_preference} fit)\n${report.description ? `• **Interface**: ${report.description}\n` : ""}• ${report.notes?.join("\n• ") || "Two-body dynamic contact check completed stably."}`,
-        });
-      } else {
-        say({
-          role: "assistant",
-          text: `⚠️ **MuJoCo Physics Check Issues**:\n• **Part 1**: ${p1}\n• **Part 2**: ${p2}\n• ${(report.issues || []).join("\n• ")}\n\nRecommendation: ${report.recommendations?.join("; ") || "Adjust clearance parameter."}`,
-          error: true,
-        });
+      // 2. Build Part 2 in the browser with OpenSCAD.
+      let part2Stl: ArrayBuffer | undefined;
+      if (mating?.part2_scad?.trim()) {
+        setBusy("Building the mating part…");
+        const r = await compileScad(mating.part2_scad);
+        if (r.ok) part2Stl = r.stl;
       }
+
+      const spec: PhysicsSpec = mating
+        ? {
+            motion: mating.motion || base.motion,
+            fit_preference: mating.fit_preference || base.fit_preference,
+            mating_part: {
+              type: mating.mating_type || base.mating_part.type,
+              primary_dim_mm: mating.primary_dim_mm || base.mating_part.primary_dim_mm,
+              depth_mm: mating.depth_mm || base.mating_part.depth_mm,
+              flat_mm: mating.flat_mm || base.mating_part.flat_mm,
+            },
+          }
+        : base;
+
+      // 3. Measure the fit and simulate it with MuJoCo (both run locally in a Web Worker).
+      setBusy("Simulating the fit with MuJoCo…");
+      const report = await runPhysicsCheck(stl, spec, part2Stl);
+      const full: PhysicsReport = {
+        ...report,
+        part1_name: mating?.part1_name || part?.title,
+        part2_name: part2Stl ? mating?.part2_name : `Standard ${labelFor(spec.mating_part.type)} (${spec.mating_part.primary_dim_mm} mm)`,
+        description: mating?.description,
+        part2_scad: part2Stl ? mating?.part2_scad : undefined,
+        part2_source: part2Stl ? "photo" : "standard",
+      };
+      setPhysics(spec);
+      setPhysicsReport(full);
+
+      const suggestion = clearanceSuggestion(full);
+      const lines = [
+        full.passed ? "Fit check passed." : "Fit check found problems.",
+        `Mating part: ${full.part2_name}${part2Stl ? " (modelled from your photos)" : ""}`,
+        ...(full.issues || []).map((i) => `• ${i}`),
+        ...(full.notes || []).map((n) => `• ${n}`),
+        ...(suggestion ? [`Suggested fix: set Clearance to ${suggestion.value.toFixed(2)} mm (now ${suggestion.current.toFixed(2)}). There's a button for it under "Physical fit".`] : []),
+        ...(!suggestion && full.recommendations?.length ? full.recommendations.map((r) => `Suggested fix: ${r}`) : []),
+      ];
+      say({ role: "assistant", text: lines.join("\n"), error: !full.passed });
     } catch (e) {
-      say({ role: "assistant", text: `Physics verification failed: ${(e as Error).message}`, error: true });
+      say({ role: "assistant", text: `Physics check failed: ${(e as Error).message}`, error: true });
     } finally {
       setBusy(null);
     }
+  }
+
+  /** If the design has a "clearance" parameter, turn the report's recommendation into a concrete value. */
+  function clearanceSuggestion(report: PhysicsReport | null) {
+    const delta = report?.metrics?.clearance_change_needed_mm;
+    const param = params.find((p) => p.name === "clearance" && p.type === "number");
+    if (!delta || !param) return null;
+    const current = Number(values.clearance ?? param.value);
+    return { current, value: Math.max(0, Math.round((current + delta) * 100) / 100) };
   }
 
   async function loadSample() {
@@ -275,6 +307,7 @@ export default function Home() {
         type: "d_shaft",
         primary_dim_mm: 6.0,
         depth_mm: 14.0,
+        flat_mm: 4.6,
       },
     };
     setPart({
@@ -448,7 +481,7 @@ export default function Home() {
                 onClick={verifyPhysics}
                 disabled={!!busy || !stl}
                 className="rounded-md bg-black/60 px-3 py-1.5 text-xs text-amber-300 backdrop-blur hover:bg-black/80 disabled:opacity-40"
-                title="Verify two-body mechanical fit and clearance using local MuJoCo"
+                title="Measure the fit against the mating part and simulate it with MuJoCo, in your browser"
               >
                 ⚙️ Verify physics
               </button>
@@ -552,7 +585,7 @@ export default function Home() {
                     </div>
                     <div className="rounded border border-slate-800 bg-slate-950 p-2">
                       <div className="text-slate-500">Mating fixture</div>
-                      <div className="font-medium">{physics.mating_part?.type}</div>
+                      <div className="font-medium">{labelFor(physics.mating_part?.type)}</div>
                     </div>
                     <div className="rounded border border-slate-800 bg-slate-950 p-2">
                       <div className="text-slate-500">Fixture size</div>
@@ -562,45 +595,58 @@ export default function Home() {
 
                   {physicsReport && (
                     <div
+                      data-testid="physics-report"
                       className={`rounded border p-2.5 ${
                         physicsReport.passed ? "border-emerald-800/60 bg-emerald-950/20" : "border-red-800/60 bg-red-950/20"
                       }`}
                     >
                       <div className="flex items-center justify-between font-medium">
                         <span className={physicsReport.passed ? "text-emerald-400" : "text-red-400"}>
-                          {physicsReport.passed ? "✓ Verification Passed" : "⚠ Verification Failed"}
+                          {physicsReport.passed ? "✓ Fit check passed" : "⚠ Fit check found problems"}
                         </span>
-                        <span className="text-[10px] text-slate-400">MuJoCo 3.14</span>
+                        <span className="text-[10px] text-slate-400">MuJoCo 3.14 · in browser</span>
                       </div>
                       {physicsReport.part2_name && (
                         <div className="mt-2 space-y-1 border-t border-slate-800/60 pt-2 text-[11px] text-slate-300">
                           <div>
                             <span className="text-slate-500">Part 1: </span>
-                            <span className="font-medium text-slate-200">{physicsReport.part1_name || part?.title || "Replacement Part"}</span>
+                            <span className="font-medium text-slate-200">{physicsReport.part1_name || part?.title || "Replacement part"}</span>
                           </div>
                           <div>
-                            <span className="text-slate-500">Part 2 (from photo): </span>
+                            <span className="text-slate-500">Part 2 ({physicsReport.part2_source === "photo" ? "from photo" : "standard size"}): </span>
                             <span className="font-medium text-sky-300">{physicsReport.part2_name}</span>
                           </div>
-                          {physicsReport.description && (
-                            <div className="text-slate-400 italic">{physicsReport.description}</div>
-                          )}
+                          {physicsReport.description && <div className="italic text-slate-400">{physicsReport.description}</div>}
                         </div>
                       )}
-                      {physicsReport.notes && physicsReport.notes.length > 0 && (
-                        <ul className="mt-2 list-disc space-y-0.5 pl-3.5 text-slate-300">
-                          {physicsReport.notes.map((n, i) => (
-                            <li key={i}>{n}</li>
-                          ))}
-                        </ul>
-                      )}
+                      {physicsReport.metrics && <PhysicsMetrics m={physicsReport.metrics} />}
                       {physicsReport.issues && physicsReport.issues.length > 0 && (
-                        <ul className="mt-1.5 list-disc space-y-0.5 pl-3.5 text-red-300">
+                        <ul className="mt-2 list-disc space-y-0.5 pl-3.5 text-red-300">
                           {physicsReport.issues.map((iss, i) => (
                             <li key={i}>{iss}</li>
                           ))}
                         </ul>
                       )}
+                      {physicsReport.notes && physicsReport.notes.length > 0 && (
+                        <ul className="mt-1.5 list-disc space-y-0.5 pl-3.5 text-slate-300">
+                          {physicsReport.notes.map((n, i) => (
+                            <li key={i}>{n}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {(() => {
+                        const sug = clearanceSuggestion(physicsReport);
+                        if (!sug || Math.abs(sug.value - sug.current) < 0.005) return null;
+                        return (
+                          <button
+                            onClick={() => setValues((v) => ({ ...v, clearance: sug.value }))}
+                            disabled={!!busy}
+                            className="mt-2 w-full rounded bg-emerald-600/20 py-1.5 text-emerald-300 hover:bg-emerald-600/30 disabled:opacity-40"
+                          >
+                            Apply suggested clearance: {sug.current.toFixed(2)} → {sug.value.toFixed(2)} mm
+                          </button>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -609,7 +655,7 @@ export default function Home() {
                     disabled={!!busy || !stl}
                     className="w-full rounded bg-amber-500/20 py-1.5 text-amber-300 hover:bg-amber-500/30 disabled:opacity-40"
                   >
-                    Run MuJoCo fit simulation
+                    {physicsReport ? "Run the fit check again" : "Run MuJoCo fit check"}
                   </button>
                 </div>
               </Collapsible>
@@ -660,6 +706,29 @@ export default function Home() {
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function PhysicsMetrics({ m }: { m: NonNullable<PhysicsReport["metrics"]> }) {
+  const rows: [string, string][] = [];
+  const mm = (v: number) => `${v.toFixed(2)} mm`;
+  if (m.clearance_per_side_mm != null)
+    rows.push([m.clearance_per_side_mm >= 0 ? "Clearance / side" : "Interference / side", mm(Math.abs(m.clearance_per_side_mm))]);
+  if (m.socket_depth_mm != null) rows.push([m.through_hole ? "Hole (through)" : "Socket depth", mm(m.socket_depth_mm)]);
+  if (m.wobble_tilt_deg != null) rows.push(["Wobble", `${m.wobble_tilt_deg.toFixed(1)}°`]);
+  if (m.twist_deg != null) rows.push(["Turn under twist", `${m.twist_deg.toFixed(1)}°`]);
+  if (m.slide_travel_mm != null) rows.push(["Slide travel", mm(m.slide_travel_mm)]);
+  if (m.tip_angle_deg != null) rows.push(["Tips over at", `${m.tip_angle_deg.toFixed(0)}°`]);
+  if (!rows.length) return null;
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 border-t border-slate-800/60 pt-2 text-[11px]">
+      {rows.map(([k, v]) => (
+        <div key={k} className="flex justify-between gap-2">
+          <span className="text-slate-500">{k}</span>
+          <span className="font-mono text-slate-200">{v}</span>
+        </div>
+      ))}
     </div>
   );
 }

@@ -55,7 +55,10 @@ Physics & Functional Interface rules:
 - Identify the primary mating interface for the replacement part.
 - Autodetect the relative motion: "sliding" (pushed onto a shaft/track/peg), "rotating" (turns or pivots like a knob, wheel, or hinge), or "static" (flat bracket, cover, or spacer).
 - Autodetect the fit preference: "snug" (press-fit to grip without slipping, e.g. knob on shaft), "smooth" (slides/rotates easily by hand with gentle friction), or "loose" (free-spinning or drop-in clearance).
-- Specify the mating part geometry (d_shaft, round_shaft, pin, slot, flat_ground) and its primary dimension in mm.`;
+- Specify the mating part geometry (d_shaft, round_shaft, pin, slot, flat_ground) and its primary dimension in mm.
+  For a D-shaft also give flat_mm (distance from the flat to the opposite side).
+- Put the mating hole/socket on the Z axis (x = y = 0), opening on the bottom face (z = 0) where possible,
+  so the in-browser fit check can find it.`;
 
 export const PART_SCHEMA = {
   type: "object",
@@ -87,6 +90,7 @@ export const PART_SCHEMA = {
             type: { type: "string", enum: ["d_shaft", "round_shaft", "pin", "slot", "flat_ground"] },
             primary_dim_mm: { type: "number" },
             depth_mm: { type: "number" },
+            flat_mm: { type: "number", description: "D-shafts only: distance from the flat to the opposite side" },
           },
           required: ["type", "primary_dim_mm"],
         },
@@ -118,14 +122,17 @@ export const MATING_PART_SCHEMA = {
     description: { type: "string", description: "Explanation of how Part 1 and Part 2 mate physically" },
     motion: { type: "string", enum: ["sliding", "rotating", "static"], description: "Relative motion between Part 1 and Part 2" },
     fit_preference: { type: "string", enum: ["snug", "smooth", "loose"], description: "Target fit feel: snug (press-fit), smooth (hand slide/glide), or loose" },
+    mating_type: { type: "string", enum: ["d_shaft", "round_shaft", "pin", "slot", "flat_ground"], description: "Shape of Part 2's mating feature" },
     part2_scad: {
       type: "string",
-      description: "Clean, self-contained OpenSCAD code for Part 2 (the mating fixture), placed so Part 1 mates with it cleanly at z=0",
+      description:
+        "Clean, self-contained OpenSCAD code for Part 2 (the mating fixture) at nominal size, with NO clearance added. Model only the mating feature and a little of what it is attached to. Point the mating end straight up (+Z) along the Z axis.",
     },
     primary_dim_mm: { type: "number", description: "Key mating interface dimension in mm (e.g. shaft diameter, pin size)" },
     depth_mm: { type: "number", description: "Mating insertion depth or overlap in mm" },
+    flat_mm: { type: "number", description: "D-shafts only: distance from the flat to the opposite side" },
   },
-  required: ["part1_name", "part2_name", "description", "motion", "fit_preference", "part2_scad", "primary_dim_mm"],
+  required: ["part1_name", "part2_name", "description", "motion", "fit_preference", "mating_type", "part2_scad", "primary_dim_mm"],
 } as const;
 
 export type MatingPartExtraction = {
@@ -134,9 +141,11 @@ export type MatingPartExtraction = {
   description: string;
   motion: "sliding" | "rotating" | "static";
   fit_preference: "snug" | "smooth" | "loose";
+  mating_type?: "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground";
   part2_scad: string;
   primary_dim_mm: number;
   depth_mm?: number;
+  flat_mm?: number;
 };
 
 export type PhysicsSpec = {
@@ -146,6 +155,7 @@ export type PhysicsSpec = {
     type: "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground";
     primary_dim_mm: number;
     depth_mm?: number;
+    flat_mm?: number;
   };
 };
 

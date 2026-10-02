@@ -27,7 +27,8 @@ photos + prompt ─► /api/generate (Gemini, structured JSON) ─► OpenSCAD c
                      │
                      ├─► "AI check": 4 renders + photos ─► /api/verify ─► fixed code if needed
                      │
-                     └─► "Verify physics": 2-body simulation ─► /api/verify-physics (MuJoCo) ─► fit & clearance
+                     └─► "Verify physics": /api/mating-part (Gemini models Part 2 from the photos)
+                              ─► browser Web Worker: manifold-3d measures clearance, MuJoCo WASM simulates the fit
 ```
 
 | Path | What it does |
@@ -38,8 +39,10 @@ photos + prompt ─► /api/generate (Gemini, structured JSON) ─► OpenSCAD c
 | `lib/scad/compile.ts` | Promise wrapper around the worker |
 | `lib/scad/params.ts` | Parses Customizer-style `name = 10; // [min:step:max] desc` lines into sliders |
 | `lib/gemini.ts` | Gemini client, style guide, schemas (including auto-detected physics & fit preferences) |
-| `scripts/verify_physics.py` | Two-body MuJoCo physics verification engine using local dynamic library |
-| `app/api/{generate,refine,verify,verify-physics}` | Server routes. The API key never reaches the browser |
+| `public/physics/fit-check.js` | Two-body fit check: finds the socket, measures clearance/interference with manifold-3d, then simulates seating, wobble, twist and sliding in MuJoCo |
+| `public/physics-worker.js`, `lib/physics.ts` | Runs the fit check in a Web Worker (MuJoCo + Manifold WASM, all in the browser) |
+| `scripts/copy-wasm.mjs` | Copies the OpenSCAD, MuJoCo and Manifold WASM builds into `public/vendor` on install |
+| `app/api/{generate,refine,verify,mating-part}` | Server routes (Gemini only). The API key never reaches the browser |
 
 ## Configuration
 
@@ -54,6 +57,13 @@ photos + prompt ─► /api/generate (Gemini, structured JSON) ─► OpenSCAD c
 Works on Vercel or any Node host. OpenSCAD runs in the browser, so the server only makes Gemini calls. The API routes set `maxDuration = 120` because Pro calls with images can be slow.
 
 Before going public, add authentication and rate limiting to `/api/*`. Image calls to Pro models cost real money.
+
+## How the physics check works
+
+1. **Part 2:** Gemini models the mating part (stem, shaft, pin...) from the photos in OpenSCAD, and the browser compiles it. Without an API key it falls back to a standard shaft from the part's physics spec.
+2. **Geometry:** manifold-3d finds the socket in Part 1 (from either face, on the Z axis), lines Part 2 up with it (rotation for D-flats/keys, centring), then measures the exact clearance (`minGap`) or interference (by offsetting Part 2's profile until it clears).
+3. **Dynamics:** MuJoCo collides meshes as convex hulls, which would fill in holes. So Part 1 is cut into 24 wedges around the socket axis and Part 2 into 1.5 mm slabs, each nearly convex. The simulation then seats the part, wiggles it, twists it (backlash / free spin) and pushes it on (sliding parts). Static parts get a drop test plus a tipping-angle calculation.
+4. Fit targets (designed clearance per side): snug −0.05–0.25 mm, smooth 0.2–0.4 mm, loose 0.35–0.8 mm. If the design has a `clearance` parameter, the UI offers a one-click fix.
 
 ## Known limitations / next steps
 

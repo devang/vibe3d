@@ -1,38 +1,49 @@
 // Shared client-side types and helpers.
 
+export type MatingType = "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground";
+
 export type PhysicsSpec = {
   motion: "sliding" | "rotating" | "static";
   fit_preference: "snug" | "smooth" | "loose";
   mating_part: {
-    type: "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground";
+    type: MatingType;
     primary_dim_mm: number;
     depth_mm?: number;
+    /** D-shafts: distance from the flat to the opposite side. */
+    flat_mm?: number;
   };
 };
 
+/** Result of the in-browser fit check (public/physics/fit-check.js). */
 export type PhysicsReport = {
   passed: boolean;
   part1_name?: string;
   part2_name?: string;
   description?: string;
   part2_scad?: string;
+  /** "photo" when Part 2 was modelled from the photos, "standard" for a generic shaft/pin. */
+  part2_source?: "photo" | "standard";
   motion: string;
   fit_preference: string;
-  mating_part?: {
-    type: string;
-    primary_dim_mm: number;
-    depth_mm?: number;
-  };
-  criteria?: {
-    max_push_force_n: number;
-    max_clearance_play_mm: number;
-    min_slip_torque_nm: number;
-    description: string;
-  };
+  mating_part?: { type: string; primary_dim_mm: number; depth_mm?: number; flat_mm?: number };
+  criteria?: { min_clearance_mm: number; max_clearance_mm: number; description: string };
   metrics?: {
-    timesteps_simulated: number;
-    simulation_stable: boolean;
-    target_fit: string;
+    clearance_per_side_mm?: number;
+    clearance_change_needed_mm?: number;
+    socket_depth_mm?: number;
+    through_hole?: boolean;
+    engagement_mm?: number;
+    orientation_deg?: number;
+    wobble_tilt_deg?: number;
+    wobble_shift_mm?: number;
+    twist_deg?: number;
+    slide_travel_mm?: number;
+    tip_angle_deg?: number;
+    final_tilt_deg?: number;
+    simulation_stable?: boolean;
+    pieces?: number;
+    fixture?: string;
+    runtime_ms?: number;
   };
   notes?: string[];
   issues?: string[];
