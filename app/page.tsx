@@ -204,7 +204,7 @@ export default function Home() {
 
   async function verifyPhysics() {
     if (!stl) return;
-    setBusy("Verifying physics in MuJoCo…");
+    setBusy("Identifying mating part from photos & running MuJoCo simulation…");
     const activePhysics: PhysicsSpec = physics || {
       motion: "rotating",
       fit_preference: "snug",
@@ -222,19 +222,36 @@ export default function Home() {
 
       const report = await postJson<PhysicsReport>("/api/verify-physics", {
         stlBase64,
+        code: bakedCode(),
+        prompt: originalPrompt,
+        photos,
         physics: activePhysics,
       });
 
       setPhysicsReport(report);
+      if (report.motion && report.fit_preference) {
+        setPhysics({
+          motion: (report.motion as "sliding" | "rotating" | "static") || activePhysics.motion,
+          fit_preference: (report.fit_preference as "snug" | "smooth" | "loose") || activePhysics.fit_preference,
+          mating_part: {
+            type: (report.mating_part?.type as "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground") || activePhysics.mating_part.type,
+            primary_dim_mm: report.mating_part?.primary_dim_mm || activePhysics.mating_part.primary_dim_mm,
+            depth_mm: report.mating_part?.depth_mm || activePhysics.mating_part.depth_mm,
+          },
+        });
+      }
+
+      const p1 = report.part1_name || part?.title || "Replacement Part (Part 1)";
+      const p2 = report.part2_name || "Mating Fixture (Part 2)";
       if (report.passed) {
         say({
           role: "assistant",
-          text: `⚙️ **MuJoCo Physics Verified (Passed)**\n• Motion: ${report.motion} (${report.fit_preference} fit)\n• Mating: ${report.mating_part?.type || "shaft"} (${report.mating_part?.primary_dim_mm || 6} mm)\n• ${report.notes?.join("\n• ") || "Two-body dynamic contact check completed stably."}`,
+          text: `⚙️ **Two-Body Physics Verified with MuJoCo**\n• **Part 1 (Replacement)**: ${p1}\n• **Part 2 (From Photo)**: ${p2}\n• **Interaction**: ${report.motion} (${report.fit_preference} fit)\n${report.description ? `• **Interface**: ${report.description}\n` : ""}• ${report.notes?.join("\n• ") || "Two-body dynamic contact check completed stably."}`,
         });
       } else {
         say({
           role: "assistant",
-          text: `⚠️ **MuJoCo Physics Check Issues**:\n• ${(report.issues || []).join("\n• ")}\n\nRecommendation: ${report.recommendations?.join("; ") || "Adjust clearance parameter."}`,
+          text: `⚠️ **MuJoCo Physics Check Issues**:\n• **Part 1**: ${p1}\n• **Part 2**: ${p2}\n• ${(report.issues || []).join("\n• ")}\n\nRecommendation: ${report.recommendations?.join("; ") || "Adjust clearance parameter."}`,
           error: true,
         });
       }
@@ -550,8 +567,23 @@ export default function Home() {
                         </span>
                         <span className="text-[10px] text-slate-400">MuJoCo 3.14</span>
                       </div>
+                      {physicsReport.part2_name && (
+                        <div className="mt-2 space-y-1 border-t border-slate-800/60 pt-2 text-[11px] text-slate-300">
+                          <div>
+                            <span className="text-slate-500">Part 1: </span>
+                            <span className="font-medium text-slate-200">{physicsReport.part1_name || part?.title || "Replacement Part"}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Part 2 (from photo): </span>
+                            <span className="font-medium text-sky-300">{physicsReport.part2_name}</span>
+                          </div>
+                          {physicsReport.description && (
+                            <div className="text-slate-400 italic">{physicsReport.description}</div>
+                          )}
+                        </div>
+                      )}
                       {physicsReport.notes && physicsReport.notes.length > 0 && (
-                        <ul className="mt-1.5 list-disc space-y-0.5 pl-3.5 text-slate-300">
+                        <ul className="mt-2 list-disc space-y-0.5 pl-3.5 text-slate-300">
                           {physicsReport.notes.map((n, i) => (
                             <li key={i}>{n}</li>
                           ))}

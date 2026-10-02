@@ -52,10 +52,10 @@ class MjWrapper:
         self.lib.mj_deleteModel.argtypes = [ctypes.c_void_p]
 
 
-def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part: dict) -> str:
+def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part: dict, part2_stl: str = None) -> str:
     """
     Builds a minimal, robust 2-body MuJoCo XML scene:
-    Body 1 (Fixture): D-shaft, round pin/shaft, or mounting slot.
+    Body 1 (Fixture): Either the compiled STL mesh of Part 2 or a parametric primitive.
     Body 2 (Generated Part): The 3D printed mesh with constrained 1-DoF relative motion.
     """
     mating_type = mating_part.get("type", "round_shaft")
@@ -80,8 +80,12 @@ def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part:
         joint_def = '<joint name="relative_motion" type="free"/>'
         actuator_def = ''
 
-    # Geometry for Part 1 (Mating Fixture)
-    if mating_type == "d_shaft":
+    # Geometry / Mesh for Part 1 (Mating Fixture)
+    part2_asset = ""
+    if part2_stl and os.path.exists(part2_stl):
+        part2_asset = f'<mesh name="part2_fixture_mesh" file="{part2_stl}" scale="0.001 0.001 0.001"/>'
+        mating_geom = '<geom name="fixture_mesh_geom" type="mesh" mesh="part2_fixture_mesh" rgba="0.3 0.5 0.9 1" density="2500" friction="0.4 0.005 0.0001"/>'
+    elif mating_type == "d_shaft":
         # Approximate D-shaft as a cylinder with a flat collision cut
         flat_offset = radius_m * 0.75
         mating_geom = f'''
@@ -98,7 +102,7 @@ def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part:
         <geom name="shaft_cyl" type="cylinder" size="{radius_m:.5f} {half_depth_m:.5f}" pos="0 0 {half_depth_m:.5f}" rgba="0.3 0.5 0.9 1" friction="0.3 0.005 0.0001"/>
         '''
 
-    # Initial position of Part 2 (Generated Part)
+    # Initial position of Part 1 (Generated Part)
     start_z = depth_m * 0.5 if motion == "sliding" else 0.001
 
     xml = f"""<mujoco model="two_part_verification">
@@ -107,6 +111,7 @@ def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part:
 
   <asset>
     <mesh name="generated_part_mesh" file="{stl_path}" scale="0.001 0.001 0.001"/>
+    {part2_asset}
     <material name="pla_plastic" rgba="0.95 0.7 0.2 1" roughness="0.5"/>
   </asset>
 
@@ -114,12 +119,12 @@ def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part:
     <light diffuse=".8 .8 .8" pos="0 0 1" dir="0 0 -1"/>
     <geom name="floor" type="plane" size="0.2 0.2 0.01" rgba="0.15 0.15 0.2 1"/>
 
-    <!-- Body 1: Fixed Mating Fixture -->
+    <!-- Body 1: Mating Fixture (Part 2) -->
     <body name="fixture" pos="0 0 0">
       {mating_geom}
     </body>
 
-    <!-- Body 2: Generated 3D Printed Part -->
+    <!-- Body 2: Generated 3D Printed Part (Part 1) -->
     <body name="part" pos="0 0 {start_z:.5f}">
       {joint_def}
       <geom name="part_mesh_geom" type="mesh" mesh="generated_part_mesh" material="pla_plastic" density="1240"/>
@@ -134,7 +139,7 @@ def build_mjcf_xml(stl_path: str, motion: str, fit_preference: str, mating_part:
     return xml
 
 
-def verify_physics(stl_path: str, physics_spec: dict) -> dict:
+def verify_physics(stl_path: str, physics_spec: dict, part2_stl: str = None) -> dict:
     """
     Executes the two-body simulation in MuJoCo and verifies physical fit/function.
     """
@@ -177,7 +182,7 @@ def verify_physics(stl_path: str, physics_spec: dict) -> dict:
     })
 
     mj = MjWrapper(LOCAL_LIB_PATH)
-    xml_content = build_mjcf_xml(stl_path, motion, fit_preference, mating_part)
+    xml_content = build_mjcf_xml(stl_path, motion, fit_preference, mating_part, part2_stl=part2_stl)
 
     with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False) as f:
         f.write(xml_content)
@@ -209,9 +214,10 @@ def verify_physics(stl_path: str, physics_spec: dict) -> dict:
 
         # Check for mesh/fixture interference
         passed = True
+        fixture_desc = "Part 2 STL mesh from photo" if (part2_stl and os.path.exists(part2_stl)) else f"{mating_part.get('type', 'shaft')} ({mating_part.get('primary_dim_mm', 6)} mm)"
         notes = [
-            f"Verified {motion} interaction against {mating_part.get('type', 'shaft')} ({mating_part.get('primary_dim_mm', 6)} mm).",
-            f"Target fit preference: {fit_preference} ({criteria['description']}).",
+            f"Simulated two-body physical interaction: Part 1 vs {fixture_desc}.",
+            f"Verified {motion} interaction with {fit_preference} fit target ({criteria['description']}).",
             "MuJoCo two-body dynamic contact check completed stably (300 steps)."
         ]
 
@@ -262,6 +268,8 @@ def main():
 
     stl_path = data.get("stl_path")
     stl_base64 = data.get("stl_base64")
+    part2_stl = data.get("part2_stl")
+    part2_base64 = data.get("part2_base64")
 
     temp_stl = None
     if not stl_path and stl_base64:
@@ -269,6 +277,13 @@ def main():
         temp_stl.write(base64.b64decode(stl_base64))
         temp_stl.close()
         stl_path = temp_stl.name
+
+    temp_stl2 = None
+    if not part2_stl and part2_base64:
+        temp_stl2 = tempfile.NamedTemporaryFile("wb", suffix=".stl", delete=False)
+        temp_stl2.write(base64.b64decode(part2_base64))
+        temp_stl2.close()
+        part2_stl = temp_stl2.name
 
     if not stl_path or not os.path.exists(stl_path):
         print(json.dumps({"passed": False, "error": f"STL file not found: {stl_path}"}))
@@ -281,11 +296,13 @@ def main():
     }
 
     try:
-        report = verify_physics(stl_path, physics_spec)
+        report = verify_physics(stl_path, physics_spec, part2_stl=part2_stl)
         print(json.dumps(report, indent=2))
     finally:
         if temp_stl and os.path.exists(temp_stl.name):
             os.unlink(temp_stl.name)
+        if temp_stl2 and os.path.exists(temp_stl2.name):
+            os.unlink(temp_stl2.name)
 
 
 if __name__ == "__main__":

@@ -110,6 +110,35 @@ export const VERIFY_SCHEMA = {
   required: ["matches", "issues", "scad_code"],
 } as const;
 
+export const MATING_PART_SCHEMA = {
+  type: "object",
+  properties: {
+    part1_name: { type: "string", description: "Name of the generated replacement part (Part 1)" },
+    part2_name: { type: "string", description: "Name of the mating part / host fixture identified from the photo/context (Part 2)" },
+    description: { type: "string", description: "Explanation of how Part 1 and Part 2 mate physically" },
+    motion: { type: "string", enum: ["sliding", "rotating", "static"], description: "Relative motion between Part 1 and Part 2" },
+    fit_preference: { type: "string", enum: ["snug", "smooth", "loose"], description: "Target fit feel: snug (press-fit), smooth (hand slide/glide), or loose" },
+    part2_scad: {
+      type: "string",
+      description: "Clean, self-contained OpenSCAD code for Part 2 (the mating fixture), placed so Part 1 mates with it cleanly at z=0",
+    },
+    primary_dim_mm: { type: "number", description: "Key mating interface dimension in mm (e.g. shaft diameter, pin size)" },
+    depth_mm: { type: "number", description: "Mating insertion depth or overlap in mm" },
+  },
+  required: ["part1_name", "part2_name", "description", "motion", "fit_preference", "part2_scad", "primary_dim_mm"],
+} as const;
+
+export type MatingPartExtraction = {
+  part1_name: string;
+  part2_name: string;
+  description: string;
+  motion: "sliding" | "rotating" | "static";
+  fit_preference: "snug" | "smooth" | "loose";
+  part2_scad: string;
+  primary_dim_mm: number;
+  depth_mm?: number;
+};
+
 export type PhysicsSpec = {
   motion: "sliding" | "rotating" | "static";
   fit_preference: "snug" | "smooth" | "loose";

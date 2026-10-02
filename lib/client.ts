@@ -12,6 +12,10 @@ export type PhysicsSpec = {
 
 export type PhysicsReport = {
   passed: boolean;
+  part1_name?: string;
+  part2_name?: string;
+  description?: string;
+  part2_scad?: string;
   motion: string;
   fit_preference: string;
   mating_part?: {
