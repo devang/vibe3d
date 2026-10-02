@@ -25,18 +25,21 @@ photos + prompt ─► /api/generate (Gemini, structured JSON) ─► OpenSCAD c
                      ▼
                    STL ─► three.js viewer ─► sliders recompile locally (-D overrides)
                      │
-                     └─► "AI check": 4 renders + photos ─► /api/verify ─► fixed code if needed
+                     ├─► "AI check": 4 renders + photos ─► /api/verify ─► fixed code if needed
+                     │
+                     └─► "Verify physics": 2-body simulation ─► /api/verify-physics (MuJoCo) ─► fit & clearance
 ```
 
 | Path | What it does |
 | --- | --- |
-| `app/page.tsx` | The whole UI: photo upload, reference picker, parameters, refine, code editor |
+| `app/page.tsx` | The whole UI: photo upload, reference picker, parameters, refine, code editor, physics check |
 | `components/Viewer.tsx` | three.js / react-three-fiber STL viewer with a 10 mm grid and 4-angle capture |
 | `public/scad-worker.js` | Module Web Worker that runs OpenSCAD WASM (Manifold backend) and returns binary STL |
 | `lib/scad/compile.ts` | Promise wrapper around the worker |
 | `lib/scad/params.ts` | Parses Customizer-style `name = 10; // [min:step:max] desc` lines into sliders |
-| `lib/gemini.ts` | Gemini client, system prompt (SCAD style guide), JSON schemas, reference-object sizes |
-| `app/api/{generate,refine,verify}` | Server routes. The API key never reaches the browser |
+| `lib/gemini.ts` | Gemini client, style guide, schemas (including auto-detected physics & fit preferences) |
+| `scripts/verify_physics.py` | Two-body MuJoCo physics verification engine using local dynamic library |
+| `app/api/{generate,refine,verify,verify-physics}` | Server routes. The API key never reaches the browser |
 
 ## Configuration
 

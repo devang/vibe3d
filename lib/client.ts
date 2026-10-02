@@ -1,9 +1,46 @@
 // Shared client-side types and helpers.
 
+export type PhysicsSpec = {
+  motion: "sliding" | "rotating" | "static";
+  fit_preference: "snug" | "smooth" | "loose";
+  mating_part: {
+    type: "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground";
+    primary_dim_mm: number;
+    depth_mm?: number;
+  };
+};
+
+export type PhysicsReport = {
+  passed: boolean;
+  motion: string;
+  fit_preference: string;
+  mating_part?: {
+    type: string;
+    primary_dim_mm: number;
+    depth_mm?: number;
+  };
+  criteria?: {
+    max_push_force_n: number;
+    max_clearance_play_mm: number;
+    min_slip_torque_nm: number;
+    description: string;
+  };
+  metrics?: {
+    timesteps_simulated: number;
+    simulation_stable: boolean;
+    target_fit: string;
+  };
+  notes?: string[];
+  issues?: string[];
+  recommendations?: string[];
+  error?: string;
+};
+
 export type Part = {
   title: string;
   summary: string;
   measurements: { name: string; value_mm: number; confidence: string; note?: string }[];
+  physics?: PhysicsSpec;
   assumptions: string[];
   warnings?: string[];
   scad_code: string;

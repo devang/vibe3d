@@ -9,7 +9,7 @@ import { compileScad } from "@/lib/scad/compile";
 import { applyParams, parseParams } from "@/lib/scad/params";
 import { downloadBlob } from "@/lib/image";
 import { EXAMPLE_KNOB } from "@/lib/examples";
-import { postJson, type ChatMessage, type Part, type PartMeta } from "@/lib/client";
+import { postJson, type ChatMessage, type Part, type PartMeta, type PhysicsSpec, type PhysicsReport } from "@/lib/client";
 import type { ModelInfo, ViewerHandle } from "@/components/Viewer";
 
 const Viewer = dynamic(() => import("@/components/Viewer"), {
@@ -43,6 +43,8 @@ export default function Home() {
   const [photos, setPhotos] = useState<string[]>([]); // photos of the original part (used by AI check)
   const [originalPrompt, setOriginalPrompt] = useState("");
   const [part, setPart] = useState<PartMeta | null>(null);
+  const [physics, setPhysics] = useState<PhysicsSpec | null>(null);
+  const [physicsReport, setPhysicsReport] = useState<PhysicsReport | null>(null);
   const [code, setCode] = useState("");
   const [values, setValues] = useState<Record<string, number | boolean>>({});
   const [stl, setStl] = useState<ArrayBuffer | null>(null);
@@ -118,6 +120,8 @@ export default function Home() {
       const r = await postJson<Part>("/api/generate", { prompt: text, images: imgs, reference });
       const { scad_code, ...meta } = r;
       setPart(meta);
+      setPhysics(meta.physics || null);
+      setPhysicsReport(null);
       setPhotos(imgs);
       setOriginalPrompt(text);
       setCode(scad_code);
@@ -152,6 +156,7 @@ export default function Home() {
       const r = await postJson<Part>("/api/refine", { code: bakedCode(), instruction: text });
       const { scad_code, ...meta } = r;
       setPart((p) => ({ ...meta, title: meta.title || p?.title || "" }));
+      if (meta.physics) setPhysics(meta.physics);
       setCode(scad_code);
       resetValues();
       const ok = await compileWithAutoFix(scad_code);
@@ -197,13 +202,68 @@ export default function Home() {
     }
   }
 
+  async function verifyPhysics() {
+    if (!stl) return;
+    setBusy("Verifying physics in MuJoCo…");
+    const activePhysics: PhysicsSpec = physics || {
+      motion: "rotating",
+      fit_preference: "snug",
+      mating_part: { type: "d_shaft", primary_dim_mm: 6.0, depth_mm: 14.0 },
+    };
+
+    try {
+      let binary = "";
+      const bytes = new Uint8Array(stl);
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const stlBase64 = btoa(binary);
+
+      const report = await postJson<PhysicsReport>("/api/verify-physics", {
+        stlBase64,
+        physics: activePhysics,
+      });
+
+      setPhysicsReport(report);
+      if (report.passed) {
+        say({
+          role: "assistant",
+          text: `⚙️ **MuJoCo Physics Verified (Passed)**\n• Motion: ${report.motion} (${report.fit_preference} fit)\n• Mating: ${report.mating_part?.type || "shaft"} (${report.mating_part?.primary_dim_mm || 6} mm)\n• ${report.notes?.join("\n• ") || "Two-body dynamic contact check completed stably."}`,
+        });
+      } else {
+        say({
+          role: "assistant",
+          text: `⚠️ **MuJoCo Physics Check Issues**:\n• ${(report.issues || []).join("\n• ")}\n\nRecommendation: ${report.recommendations?.join("; ") || "Adjust clearance parameter."}`,
+          error: true,
+        });
+      }
+    } catch (e) {
+      say({ role: "assistant", text: `Physics verification failed: ${(e as Error).message}`, error: true });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function loadSample() {
+    const samplePhysics: PhysicsSpec = {
+      motion: "rotating",
+      fit_preference: "snug",
+      mating_part: {
+        type: "d_shaft",
+        primary_dim_mm: 6.0,
+        depth_mm: 14.0,
+      },
+    };
     setPart({
       title: "Stove knob (sample)",
       summary: "Sample part",
       measurements: [],
+      physics: samplePhysics,
       assumptions: [],
     });
+    setPhysics(samplePhysics);
+    setPhysicsReport(null);
     setCode(EXAMPLE_KNOB);
     resetValues();
     setPhotos([]);
@@ -223,6 +283,8 @@ export default function Home() {
     setView("start");
     setMessages([]);
     setPart(null);
+    setPhysics(null);
+    setPhysicsReport(null);
     setCode("");
     setStl(null);
     setInfo(null);
@@ -323,7 +385,51 @@ export default function Home() {
             ) : (
               <span />
             )}
-            <div className="pointer-events-auto flex gap-2">
+            <div className="pointer-events-auto flex items-center gap-2">
+              {physics && (
+                <div className="flex items-center gap-1.5 rounded-md bg-black/60 px-2.5 py-1 text-xs text-slate-300 backdrop-blur">
+                  <span className="text-amber-400">⚡</span>
+                  <select
+                    value={physics.motion}
+                    onChange={(e) =>
+                      setPhysics({
+                        ...physics,
+                        motion: e.target.value as "sliding" | "rotating" | "static",
+                      })
+                    }
+                    className="cursor-pointer bg-transparent text-slate-200 capitalize hover:text-white focus:outline-none"
+                    title="Motion type"
+                  >
+                    <option value="sliding" className="bg-slate-900 text-slate-100">Sliding</option>
+                    <option value="rotating" className="bg-slate-900 text-slate-100">Rotating</option>
+                    <option value="static" className="bg-slate-900 text-slate-100">Static</option>
+                  </select>
+                  <span className="text-slate-500">·</span>
+                  <select
+                    value={physics.fit_preference}
+                    onChange={(e) =>
+                      setPhysics({
+                        ...physics,
+                        fit_preference: e.target.value as "snug" | "smooth" | "loose",
+                      })
+                    }
+                    className="cursor-pointer bg-transparent text-amber-300 hover:text-amber-200 focus:outline-none"
+                    title="Fit preference"
+                  >
+                    <option value="snug" className="bg-slate-900 text-slate-100">Snug fit</option>
+                    <option value="smooth" className="bg-slate-900 text-slate-100">Smooth glide</option>
+                    <option value="loose" className="bg-slate-900 text-slate-100">Loose fit</option>
+                  </select>
+                </div>
+              )}
+              <button
+                onClick={verifyPhysics}
+                disabled={!!busy || !stl}
+                className="rounded-md bg-black/60 px-3 py-1.5 text-xs text-amber-300 backdrop-blur hover:bg-black/80 disabled:opacity-40"
+                title="Verify two-body mechanical fit and clearance using local MuJoCo"
+              >
+                ⚙️ Verify physics
+              </button>
               <button
                 onClick={aiCheck}
                 disabled={!!busy || !stl}
@@ -407,6 +513,68 @@ export default function Home() {
                     ))}
                   </ul>
                 )}
+              </Collapsible>
+            )}
+
+            {physics && (
+              <Collapsible title="Physical fit (MuJoCo)" badge={physics.fit_preference}>
+                <div className="space-y-3 text-xs">
+                  <div className="grid grid-cols-2 gap-2 text-slate-300">
+                    <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                      <div className="text-slate-500">Motion</div>
+                      <div className="font-medium capitalize">{physics.motion}</div>
+                    </div>
+                    <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                      <div className="text-slate-500">Fit target</div>
+                      <div className="font-medium capitalize">{physics.fit_preference}</div>
+                    </div>
+                    <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                      <div className="text-slate-500">Mating fixture</div>
+                      <div className="font-medium">{physics.mating_part?.type}</div>
+                    </div>
+                    <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                      <div className="text-slate-500">Fixture size</div>
+                      <div className="font-medium">{physics.mating_part?.primary_dim_mm} mm</div>
+                    </div>
+                  </div>
+
+                  {physicsReport && (
+                    <div
+                      className={`rounded border p-2.5 ${
+                        physicsReport.passed ? "border-emerald-800/60 bg-emerald-950/20" : "border-red-800/60 bg-red-950/20"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-medium">
+                        <span className={physicsReport.passed ? "text-emerald-400" : "text-red-400"}>
+                          {physicsReport.passed ? "✓ Verification Passed" : "⚠ Verification Failed"}
+                        </span>
+                        <span className="text-[10px] text-slate-400">MuJoCo 3.14</span>
+                      </div>
+                      {physicsReport.notes && physicsReport.notes.length > 0 && (
+                        <ul className="mt-1.5 list-disc space-y-0.5 pl-3.5 text-slate-300">
+                          {physicsReport.notes.map((n, i) => (
+                            <li key={i}>{n}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {physicsReport.issues && physicsReport.issues.length > 0 && (
+                        <ul className="mt-1.5 list-disc space-y-0.5 pl-3.5 text-red-300">
+                          {physicsReport.issues.map((iss, i) => (
+                            <li key={i}>{iss}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={verifyPhysics}
+                    disabled={!!busy || !stl}
+                    className="w-full rounded bg-amber-500/20 py-1.5 text-amber-300 hover:bg-amber-500/30 disabled:opacity-40"
+                  >
+                    Run MuJoCo fit simulation
+                  </button>
+                </div>
               </Collapsible>
             )}
 

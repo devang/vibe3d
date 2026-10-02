@@ -49,7 +49,13 @@ Measurement rules:
 - When a reference object is present, use it to estimate scale. Correct for perspective where possible.
 - List every key measurement you used with a confidence (high/medium/low). Be honest: photo estimates are typically +/-0.5-1 mm.
 - List assumptions (e.g. hidden faces, symmetry, material).
-- If the part is safety-critical, load-bearing, heat-exposed or food-contact, say so in "warnings".`;
+- If the part is safety-critical, load-bearing, heat-exposed or food-contact, say so in "warnings".
+
+Physics & Functional Interface rules:
+- Identify the primary mating interface for the replacement part.
+- Autodetect the relative motion: "sliding" (pushed onto a shaft/track/peg), "rotating" (turns or pivots like a knob, wheel, or hinge), or "static" (flat bracket, cover, or spacer).
+- Autodetect the fit preference: "snug" (press-fit to grip without slipping, e.g. knob on shaft), "smooth" (slides/rotates easily by hand with gentle friction), or "loose" (free-spinning or drop-in clearance).
+- Specify the mating part geometry (d_shaft, round_shaft, pin, slot, flat_ground) and its primary dimension in mm.`;
 
 export const PART_SCHEMA = {
   type: "object",
@@ -69,11 +75,29 @@ export const PART_SCHEMA = {
         required: ["name", "value_mm", "confidence"],
       },
     },
+    physics: {
+      type: "object",
+      description: "Auto-detected physical interaction and fit preference with mating fixture",
+      properties: {
+        motion: { type: "string", enum: ["sliding", "rotating", "static"] },
+        fit_preference: { type: "string", enum: ["snug", "smooth", "loose"] },
+        mating_part: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["d_shaft", "round_shaft", "pin", "slot", "flat_ground"] },
+            primary_dim_mm: { type: "number" },
+            depth_mm: { type: "number" },
+          },
+          required: ["type", "primary_dim_mm"],
+        },
+      },
+      required: ["motion", "fit_preference", "mating_part"],
+    },
     assumptions: { type: "array", items: { type: "string" } },
     warnings: { type: "array", items: { type: "string" } },
     scad_code: { type: "string", description: "Complete OpenSCAD source" },
   },
-  required: ["title", "summary", "measurements", "assumptions", "scad_code"],
+  required: ["title", "summary", "measurements", "physics", "assumptions", "scad_code"],
 } as const;
 
 export const VERIFY_SCHEMA = {
@@ -86,10 +110,21 @@ export const VERIFY_SCHEMA = {
   required: ["matches", "issues", "scad_code"],
 } as const;
 
+export type PhysicsSpec = {
+  motion: "sliding" | "rotating" | "static";
+  fit_preference: "snug" | "smooth" | "loose";
+  mating_part: {
+    type: "d_shaft" | "round_shaft" | "pin" | "slot" | "flat_ground";
+    primary_dim_mm: number;
+    depth_mm?: number;
+  };
+};
+
 export type PartResult = {
   title: string;
   summary: string;
   measurements: { name: string; value_mm: number; confidence: string; note?: string }[];
+  physics?: PhysicsSpec;
   assumptions: string[];
   warnings?: string[];
   scad_code: string;

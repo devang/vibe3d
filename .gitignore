@@ -43,3 +43,8 @@ next-env.d.ts
 
 # OpenSCAD wasm copied at install time
 /public/vendor
+
+# Local binaries and virtualenvs
+/mujoco-*
+/.venv
+*.stl
